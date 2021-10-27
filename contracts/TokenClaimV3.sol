@@ -158,26 +158,29 @@ contract TokenClaimV3 is Ownable {
         onlyOwner
         returns (bool)
     {
-        require(totalReward > 0 || users.length > 0, "Invalid data");
-        if (totalReward > 0) {
-            ERC20Interface = IERC20(tokenAddress);
-            ERC20Interface.safeTransferFrom(
-                msg.sender,
-                address(this),
-                totalReward
+        require(totalReward > 0 && users.length > 0, "Invalid data");
+        require(users.length == tokenValues.length, "Invalid user data");
+        require(release > block.timestamp, "Invalid release time");
+        if (unlockTime[tokenAddress][phaseNo] > 0) {
+            require(
+                block.timestamp < unlockTime[tokenAddress][phaseNo],
+                "Phase already started"
             );
-            emit RewardAdded(tokenAddress, phaseNo, totalReward);
         }
-        if (users.length > 0) {
-            require(users.length == tokenValues.length, "Invalid user data");
-            require(release > block.timestamp, "Invalid release time");
-            unlockTime[tokenAddress][phaseNo] = release;
-            for (uint256 i = 0; i < users.length; i++) {
-                userTokenClaimPerPhase[tokenAddress][phaseNo][
-                    users[i]
-                ] = tokenValues[i];
+        unlockTime[tokenAddress][phaseNo] = release;
+        uint256 rewardCheck = totalReward;
+        for (uint256 i = 0; i < users.length; i++) {
+            userTokenClaimPerPhase[tokenAddress][phaseNo][users[i]] =
+                userTokenClaimPerPhase[tokenAddress][phaseNo][users[i]] +
+                tokenValues[i];
+            unchecked {
+                rewardCheck = rewardCheck - tokenValues[i];
             }
         }
+        require(rewardCheck == 0, "Incorrect reward values");
+        ERC20Interface = IERC20(tokenAddress);
+        ERC20Interface.safeTransferFrom(msg.sender, address(this), totalReward);
+        emit RewardAdded(tokenAddress, phaseNo, totalReward);
         return true;
     }
 
