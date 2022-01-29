@@ -97,7 +97,7 @@ library SafeERC20 {
         address to,
         uint256 value
     ) internal {
-        require(token.transfer(to, value));
+        require(token.transfer(to, value), "SafeERC20 Transfer Failed");
     }
 
     function safeTransferFrom(
@@ -106,15 +106,7 @@ library SafeERC20 {
         address to,
         uint256 value
     ) internal {
-        require(token.transferFrom(from, to, value));
-    }
-
-    function safeApprove(
-        IERC20 token,
-        address spender,
-        uint256 value
-    ) internal {
-        require(token.approve(spender, value));
+        require(token.transferFrom(from, to, value), "SafeERC20 TransferFrom failed");
     }
 }
 
@@ -184,6 +176,14 @@ contract TokenClaimV3 is Ownable {
         return true;
     }
 
+    function claimMultiple(address tokenAddress, uint256[] calldata phaseNo) external returns(bool) {
+        for(uint i; i < phaseNo.length; i++) {
+            require(claim(tokenAddress, phaseNo[i]));
+        }
+        return true;
+    }
+
+
     function getUserPhaseTokenClaim(
         address tokenAddress,
         uint256 phaseNo,
@@ -193,7 +193,7 @@ contract TokenClaimV3 is Ownable {
     }
 
     function claim(address tokenAddress, uint256 phaseNo)
-        external
+        public
         returns (bool)
     {
         require(
@@ -210,7 +210,7 @@ contract TokenClaimV3 is Ownable {
         delete userTokenClaimPerPhase[tokenAddress][phaseNo][msg.sender];
         ERC20Interface = IERC20(tokenAddress);
         require(
-            ERC20Interface.balanceOf(address(this)) > amount,
+            ERC20Interface.balanceOf(address(this)) >= amount,
             "No tokens available in the contract"
         );
         ERC20Interface.safeTransfer(msg.sender, amount);
