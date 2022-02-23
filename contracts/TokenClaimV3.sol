@@ -171,15 +171,15 @@ contract TokenClaim is Ownable {
         uint256[] memory _phaseRewardTotal,
         address _token
     ) {
-        uint256 len = _rootHash.length;
-        require(len > 0, "No single entry");
+        require(_rootHash.length > 0, "No single entry");
         require(
-            len == _startTimes.length && _phaseRewardTotal.length == len,
+            _rootHash.length == _startTimes.length &&
+                _phaseRewardTotal.length == _rootHash.length,
             "Length mismatch"
         );
         require(_token != address(0), "Zero token address");
 
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i = 0; i < _rootHash.length; i++) {
             require(
                 addVesting(_rootHash[i], _startTimes[i], _phaseRewardTotal[i])
             );
@@ -288,12 +288,12 @@ contract TokenClaim is Ownable {
         uint256[] calldata phaseNo,
         bytes32[][] calldata proof
     ) external {
-        uint256 len = amount.length;
+        require(amount.length > 0, "No single entry");
         require(
-            len == phaseNo.length && len == proof.length,
+            amount.length == phaseNo.length && amount.length == proof.length,
             "Length mismatch"
         );
-        for (uint256 i; i < len; i++) {
+        for (uint256 i; i < amount.length; i++) {
             require(
                 claimTokens(amount[i], phaseNo[i], proof[i]),
                 "Claim failed"
