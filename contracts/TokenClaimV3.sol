@@ -1,10 +1,47 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity 0.8.9;
+// SPDX-License-Identifier: MIT
 
-/**
- * @dev Interface of the ERC20 standard as defined in the EIP. Does not include
- * the optional functions; to access them see `ERC20Detailed`.
- */
+pragma solidity ^0.8.0;
+
+library MerkleProof {
+    function verify(
+        bytes32[] memory proof,
+        bytes32 root,
+        bytes32 leaf
+    ) internal pure returns (bool) {
+        return processProof(proof, leaf) == root;
+    }
+
+    function processProof(bytes32[] memory proof, bytes32 leaf)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 computedHash = leaf;
+        for (uint256 i = 0; i < proof.length; i++) {
+            bytes32 proofElement = proof[i];
+            if (computedHash <= proofElement) {
+                // Hash(current computed hash + current element of the proof)
+                computedHash = _efficientHash(computedHash, proofElement);
+            } else {
+                // Hash(current element of the proof + current computed hash)
+                computedHash = _efficientHash(proofElement, computedHash);
+            }
+        }
+        return computedHash;
+    }
+
+    function _efficientHash(bytes32 a, bytes32 b)
+        private
+        pure
+        returns (bytes32 value)
+    {
+        assembly {
+            mstore(0x00, a)
+            mstore(0x20, b)
+            value := keccak256(0x00, 0x40)
+        }
+    }
+}
 
 interface IERC20 {
     function totalSupply() external view returns (uint256);
@@ -37,19 +74,11 @@ interface IERC20 {
     );
 }
 
-pragma solidity ^0.8.0;
-
 abstract contract Context {
     function _msgSender() internal view virtual returns (address) {
         return msg.sender;
     }
-
-    function _msgData() internal view virtual returns (bytes calldata) {
-        return msg.data;
-    }
 }
-
-pragma solidity 0.8.9;
 
 abstract contract Ownable is Context {
     address private _owner;
@@ -97,7 +126,7 @@ library SafeERC20 {
         address to,
         uint256 value
     ) internal {
-        require(token.transfer(to, value), "SafeERC20 Transfer Failed");
+        require(token.transfer(to, value), "SafeERC20: Transfer failed");
     }
 
     function safeTransferFrom(
@@ -106,115 +135,193 @@ library SafeERC20 {
         address to,
         uint256 value
     ) internal {
-        require(token.transferFrom(from, to, value), "SafeERC20 TransferFrom failed");
+        require(
+            token.transferFrom(from, to, value),
+            "SafeERC20: Transfer from failed"
+        );
     }
 }
 
-pragma solidity 0.8.9;
-
-contract TokenClaimV3 is Ownable {
+contract TokenClaim is Ownable {
     using SafeERC20 for IERC20;
 
-    string public name;
-    IERC20 public ERC20Interface;
+    uint256 public noOfVestings;
+    IERC20 public immutable ERC20Interface;
 
-    mapping(address => mapping(uint256 => uint256)) public unlockTime;
-    mapping(address => mapping(uint256 => mapping(address => uint256))) userTokenClaimPerPhase;
-
-    event RewardAdded(address indexed token, uint256 phase, uint256 amount);
-    event Claimed(address indexed user, address indexed token, uint256 amount);
-
-    modifier _hasAllowance(
-        address allower,
-        uint256 amount,
-        address token
-    ) {
-        // Make sure the allower has provided the right allowance.
-        require(token != address(0), "Zero token address");
-        ERC20Interface = IERC20(token);
-        uint256 ourAllowance = ERC20Interface.allowance(allower, address(this));
-        require(amount <= ourAllowance, "Make sure to add enough allowance");
-        _;
+    struct Vesting {
+        bytes32 rootHash;
+        uint256 startTime;
+        uint256 phaseRewardTotal;
+        uint256 phaseRewardBalance;
     }
 
-    function updateUserTokens(
-        address tokenAddress,
-        uint256 totalReward,
-        uint256 phaseNo,
-        uint256 release,
-        address[] memory users,
-        uint256[] memory tokenValues
-    )
-        external
-        _hasAllowance(msg.sender, totalReward, tokenAddress)
-        onlyOwner
-        returns (bool)
-    {
-        require(totalReward > 0 && users.length > 0, "Invalid data");
-        require(users.length == tokenValues.length, "Invalid user data");
-        require(release > block.timestamp, "Invalid release time");
-        if (unlockTime[tokenAddress][phaseNo] > 0) {
+    mapping(uint256 => bool) public paused;
+    mapping(uint256 => Vesting) public vestingDetail;
+    mapping(address => mapping(uint256 => bool)) public hasClaimed;
+
+    event Claimed(
+        address indexed user,
+        uint256 indexed phaseNo,
+        uint256 amount
+    );
+
+    constructor(
+        bytes32[] memory _rootHash,
+        uint256[] memory _startTimes,
+        uint256[] memory _phaseRewardTotal,
+        address _token
+    ) {
+        uint256 len = _rootHash.length;
+        require(len > 0, "No single entry");
+        require(
+            len == _startTimes.length && _phaseRewardTotal.length == len,
+            "Length mismatch"
+        );
+        require(_token != address(0), "Zero token address");
+
+        for (uint256 i = 0; i < len; i++) {
             require(
-                block.timestamp < unlockTime[tokenAddress][phaseNo],
-                "Phase already started"
+                addVesting(_rootHash[i], _startTimes[i], _phaseRewardTotal[i])
             );
         }
-        unlockTime[tokenAddress][phaseNo] = release;
-        uint256 rewardCheck = totalReward;
-        for (uint256 i = 0; i < users.length; i++) {
-            userTokenClaimPerPhase[tokenAddress][phaseNo][users[i]] =
-                userTokenClaimPerPhase[tokenAddress][phaseNo][users[i]] +
-                tokenValues[i];
-            unchecked {
-                rewardCheck = rewardCheck - tokenValues[i];
-            }
-        }
-        require(rewardCheck == 0, "Incorrect reward values");
-        ERC20Interface = IERC20(tokenAddress);
-        ERC20Interface.safeTransferFrom(msg.sender, address(this), totalReward);
-        emit RewardAdded(tokenAddress, phaseNo, totalReward);
+        ERC20Interface = IERC20(_token);
+    }
+
+    function addVesting(
+        bytes32 _rootHash,
+        uint256 _startTime,
+        uint256 _phaseRewardTotal
+    ) public onlyOwner returns (bool) {
+        require(_phaseRewardTotal > 0, "Zero phase reward total");
+        vestingDetail[noOfVestings] = Vesting(
+            _rootHash,
+            _startTime,
+            _phaseRewardTotal,
+            0
+        );
+        noOfVestings++;
         return true;
     }
 
-    function claimMultiple(address tokenAddress, uint256[] calldata phaseNo) external returns(bool) {
-        for(uint i; i < phaseNo.length; i++) {
-            require(claim(tokenAddress, phaseNo[i]));
-        }
-        return true;
-    }
-
-
-    function getUserPhaseTokenClaim(
-        address tokenAddress,
-        uint256 phaseNo,
-        address user
-    ) external view returns (uint256) {
-        return userTokenClaimPerPhase[tokenAddress][phaseNo][user];
-    }
-
-    function claim(address tokenAddress, uint256 phaseNo)
-        public
-        returns (bool)
+    function addPhaseReward(uint256 phaseNo, uint256 amount)
+        internal
+        checkPhaseNo(phaseNo)
     {
         require(
-            unlockTime[tokenAddress][phaseNo] < block.timestamp,
-            "Wait for unlock time"
+            vestingDetail[phaseNo].phaseRewardBalance + amount <=
+                vestingDetail[phaseNo].phaseRewardTotal,
+            "Adding more than phase required tokens"
         );
-        uint256 amount = userTokenClaimPerPhase[tokenAddress][phaseNo][
-            msg.sender
-        ];
+        vestingDetail[phaseNo].phaseRewardBalance += amount;
+        ERC20Interface.safeTransferFrom(msg.sender, address(this), amount);
+    }
+
+    function addMultiplePhaseRewards(
+        uint256[] calldata phaseNo,
+        uint256[] calldata amount
+    ) external onlyOwner {
+        require(phaseNo.length == amount.length, "Length mismatch");
+        for (uint256 i; i < phaseNo.length; i++) {
+            addPhaseReward(phaseNo[i], amount[i]);
+        }
+    }
+
+    function changeStartTime(uint256 phaseNo, uint256 _startTime)
+        external
+        onlyOwner
+        checkPhaseNo(phaseNo)
+    {
         require(
-            amount > 0,
-            "No claimable tokens available for user in this phase"
+            block.timestamp < vestingDetail[phaseNo].startTime,
+            "Start time already reached"
         );
-        delete userTokenClaimPerPhase[tokenAddress][phaseNo][msg.sender];
-        ERC20Interface = IERC20(tokenAddress);
+        vestingDetail[phaseNo].startTime = _startTime;
+    }
+
+    function pauseVesting(uint256 phaseNo)
+        external
+        onlyOwner
+        checkPhaseNo(phaseNo)
+    {
+        require(!paused[phaseNo], "Already paused");
+        paused[phaseNo] = true;
+    }
+
+    function unPauseVesting(uint256 phaseNo)
+        external
+        onlyOwner
+        checkPhaseNo(phaseNo)
+    {
+        require(paused[phaseNo], "Already unpaused");
+        paused[phaseNo] = false;
+    }
+
+    function claimTokens(
+        uint256 amount,
+        uint256 phaseNo,
+        bytes32[] calldata proof
+    ) public checkPhaseNo(phaseNo) returns (bool) {
         require(
-            ERC20Interface.balanceOf(address(this)) >= amount,
-            "No tokens available in the contract"
+            block.timestamp >= vestingDetail[phaseNo].startTime,
+            "Start time not reached"
         );
+        require(!paused[phaseNo], "Vesting paused");
+        require(!hasClaimed[msg.sender][phaseNo], "Already claimed");
+        require(
+            verify(msg.sender, amount, proof, vestingDetail[phaseNo].rootHash),
+            "Wrong details"
+        );
+        require(
+            vestingDetail[phaseNo].phaseRewardBalance > amount &&
+                vestingDetail[phaseNo].phaseRewardBalance - amount >= 0,
+            "Not enough tokens for this phase"
+        );
+        hasClaimed[msg.sender][phaseNo] = true;
+        vestingDetail[phaseNo].phaseRewardBalance -= amount;
         ERC20Interface.safeTransfer(msg.sender, amount);
-        emit Claimed(msg.sender, tokenAddress, amount);
+        emit Claimed(msg.sender, phaseNo, amount);
         return true;
+    }
+
+    function claimMultiple(
+        uint256[] calldata amount,
+        uint256[] calldata phaseNo,
+        bytes32[][] calldata proof
+    ) external {
+        uint256 len = amount.length;
+        require(
+            len == phaseNo.length && len == proof.length,
+            "Length mismatch"
+        );
+        for (uint256 i; i < len; i++) {
+            require(
+                claimTokens(amount[i], phaseNo[i], proof[i]),
+                "Claim failed"
+            );
+        }
+    }
+
+    function verify(
+        address user,
+        uint256 amount,
+        bytes32[] calldata proof,
+        bytes32 rootHash
+    ) public pure returns (bool) {
+        return (
+            MerkleProof.verify(
+                proof,
+                rootHash,
+                keccak256(abi.encodePacked(user, amount))
+            )
+        );
+    }
+
+    function tokenBalance() external view returns (uint256) {
+        return ERC20Interface.balanceOf(address(this));
+    }
+
+    modifier checkPhaseNo(uint256 phaseNo) {
+        require(phaseNo >= 0 && phaseNo < noOfVestings, "Invalid phase number");
+        _;
     }
 }
