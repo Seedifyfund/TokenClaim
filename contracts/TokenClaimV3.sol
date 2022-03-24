@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.9;
 
 library MerkleProof {
     function verify(
@@ -165,6 +165,17 @@ contract TokenClaim is Ownable {
         uint256 amount
     );
 
+    event VestingAdded(
+        uint256 indexed phaseNo,
+        bytes32 rootHash,
+        uint256 startTime,
+        uint256 totalReward
+    );
+
+    event PhaseRewardAdded(uint256 indexed phaseNo, uint256 rewards);
+    event StartTimeUpdated(uint256 indexed phaseNo, uint256 startTime);
+    event VestingStatusUpdated(uint256 indexed phaseNo, bool status);
+
     constructor(
         bytes32[] memory _rootHash,
         uint256[] memory _startTimes,
@@ -199,6 +210,12 @@ contract TokenClaim is Ownable {
             _phaseRewardTotal,
             0
         );
+        emit VestingAdded(
+            noOfVestings,
+            _rootHash,
+            _startTime,
+            _phaseRewardTotal
+        );
         noOfVestings++;
         return true;
     }
@@ -214,6 +231,7 @@ contract TokenClaim is Ownable {
         );
         vestingDetail[phaseNo].phaseRewardBalance += amount;
         ERC20Interface.safeTransferFrom(msg.sender, address(this), amount);
+        emit PhaseRewardAdded(phaseNo, amount);
     }
 
     function addMultiplePhaseRewards(
@@ -236,6 +254,7 @@ contract TokenClaim is Ownable {
             "Start time already reached"
         );
         vestingDetail[phaseNo].startTime = _startTime;
+        emit StartTimeUpdated(phaseNo, _startTime);
     }
 
     function pauseVesting(uint256 phaseNo)
@@ -245,6 +264,7 @@ contract TokenClaim is Ownable {
     {
         require(!paused[phaseNo], "Already paused");
         paused[phaseNo] = true;
+        emit VestingStatusUpdated(phaseNo, true);
     }
 
     function unPauseVesting(uint256 phaseNo)
@@ -254,6 +274,7 @@ contract TokenClaim is Ownable {
     {
         require(paused[phaseNo], "Already unpaused");
         paused[phaseNo] = false;
+        emit VestingStatusUpdated(phaseNo, false);
     }
 
     function claimTokens(
@@ -272,8 +293,7 @@ contract TokenClaim is Ownable {
             "Wrong details"
         );
         require(
-            vestingDetail[phaseNo].phaseRewardBalance > amount &&
-                vestingDetail[phaseNo].phaseRewardBalance - amount >= 0,
+            vestingDetail[phaseNo].phaseRewardBalance > amount,
             "Not enough tokens for this phase"
         );
         hasClaimed[msg.sender][phaseNo] = true;
