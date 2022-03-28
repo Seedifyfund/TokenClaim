@@ -293,7 +293,7 @@ contract TokenClaim is Ownable {
             "Wrong details"
         );
         require(
-            vestingDetail[phaseNo].phaseRewardBalance > amount,
+            vestingDetail[phaseNo].phaseRewardBalance >= amount,
             "Not enough tokens for this phase"
         );
         hasClaimed[msg.sender][phaseNo] = true;
